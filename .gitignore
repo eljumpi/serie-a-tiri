@@ -1,0 +1,3 @@
+data/raw/stats/
+__pycache__/
+*.tmp
