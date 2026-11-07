@@ -1,4 +1,4 @@
-name: Aggiorna classifica
+name: Aggiorna classifiche
 
 on:
   schedule:
@@ -18,17 +18,29 @@ jobs:
         with:
           python-version: "3.11"
 
+      # build.py elabora tutti i campionati registrati in LEAGUES. Se uno fallisce
+      # gli altri vengono comunque generati; l'esito viene riportato nello step finale.
       - name: Esegui build.py
+        id: build
+        continue-on-error: true
         run: python3 build.py
 
+      # Gira sempre, anche dopo un errore: pubblica i campionati riusciti.
       - name: Commit e push se ci sono variazioni
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data index.html
+          git add data index.html ./*/*.html
           if git diff --cached --quiet; then
             echo "Nessuna variazione."
           else
             git commit -m "Aggiornamento dati $(date -u +%Y-%m-%d)"
             git push
           fi
+
+      # Rende il job rosso se build.py ha avuto errori (campionato fallito o dati parziali).
+      - name: Esito build
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "::error::build.py ha riportato errori: vedi lo step 'Esegui build.py'. Gli altri campionati sono stati pubblicati."
+          exit 1
