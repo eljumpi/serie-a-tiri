@@ -11,6 +11,8 @@ Fonte dati: API pubbliche ESPN (nessuna API key).
   - elenco partite:  site.api.espn.com     /apis/site/v2/sports/soccer/<lega>/scoreboard?dates=YYYYMMDD
   - statistiche:     site.web.api.espn.com /apis/site/v2/sports/soccer/<lega>/summary?event=<id>
   - controllo G:     site.api.espn.com     /apis/v2/sports/soccer/<lega>/standings
+Controllo incrociato (solo segnalazione, non modifica i dati):
+  - CSV football-data.co.uk  /mmz4281/<stagione>/<div>.csv  (HST/AST = tiri in porta)
 
 Output:
   index.html                           home, una card per campionato/statistica
@@ -31,7 +33,9 @@ Solo libreria standard Python 3.
 """
 
 import argparse
+import csv
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -52,28 +56,52 @@ PROC_DIR = os.path.join(DATA_DIR, "processed")
 OUT_HOME = os.path.join(BASE_DIR, "index.html")
 
 # Registro campionati: aggiungerne uno = una riga.
+# "csv" = divisione football-data.co.uk per il controllo incrociato (None = nessun controllo).
 LEAGUES = [
-    {"code": "ita.1", "name": "Serie A",        "slug": "serie-a"},
-    {"code": "eng.1", "name": "Premier League", "slug": "premier-league"},
+    {"code": "ita.1", "name": "Serie A",        "slug": "serie-a",        "csv": "I1"},
+    {"code": "eng.1", "name": "Premier League", "slug": "premier-league", "csv": "E0"},
 ]
+
+# Nomi squadra football-data.co.uk -> nome ESPN (displayName), solo dove differiscono.
+# Un nome del CSV non riconosciuto viene segnalato nel riquadro "Controllo incrociato".
+CSV_TEAMS = {
+    "serie-a": {
+        "Inter": "Internazionale", "Milan": "AC Milan", "Roma": "AS Roma",
+    },
+    "premier-league": {
+        "Bournemouth": "AFC Bournemouth", "Brighton": "Brighton & Hove Albion",
+        "Coventry": "Coventry City", "Hull": "Hull City", "Ipswich": "Ipswich Town",
+        "Leeds": "Leeds United", "Man City": "Manchester City", "Man United": "Manchester United",
+        "Newcastle": "Newcastle United", "Nott'm Forest": "Nottingham Forest",
+        "Tottenham": "Tottenham Hotspur",
+        # possibili neopromosse/retrocesse
+        "Wolves": "Wolverhampton Wanderers", "West Ham": "West Ham United",
+        "Leicester": "Leicester City", "Sheffield United": "Sheffield United",
+        "Luton": "Luton Town", "Burnley": "Burnley", "Southampton": "Southampton",
+    },
+}
 
 # Registro statistiche. "id" e' il nome ESPN in boxscore.teams[].statistics[].name.
 # implemented=False -> compare nel menu come "prossimamente", non cliccabile.
 # Per implementarne una: implemented=True (le pagine vengono generate da sole).
 # "abbr" abbrevia la statistica nelle colonne (abbr+F fatti, abbr+S subiti),
-# "unit" e' il nome esteso usato nei testi.
+# "unit" e' il nome esteso usato nei testi. "csv" = colonne casa/trasferta nel CSV
+# football-data.co.uk per il controllo incrociato (None = nessun controllo).
 STATS = [
     {"id": "shotsOnTarget", "name": "Tiri in porta",   "slug": "tiri-in-porta",
-     "abbr": "TP", "unit": "tiri in porta", "implemented": True},
+     "abbr": "TP", "unit": "tiri in porta", "implemented": True, "csv": ("HST", "AST")},
     {"id": "totalShots",    "name": "Tiri totali",     "slug": "tiri-totali",
-     "abbr": "TT", "unit": "tiri totali", "implemented": False},
+     "abbr": "TT", "unit": "tiri totali", "implemented": False, "csv": ("HS", "AS")},
     {"id": "wonCorners",    "name": "Calci d'angolo",  "slug": "calci-d-angolo",
-     "abbr": "CA", "unit": "calci d'angolo", "implemented": False},
+     "abbr": "CA", "unit": "calci d'angolo", "implemented": False, "csv": ("HC", "AC")},
 ]
 
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date}"
 SUMMARY = "https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league}/summary?event={event}"
 STANDINGS = "https://site.api.espn.com/apis/v2/sports/soccer/{league}/standings"
+AUDIT_CSV = "https://football-data.co.uk/mmz4281/{season}/{div}.csv"
+AUDIT_CSV_FILE = "football-data-co-uk.csv"
+AUDIT_DATE_TOLERANCE = 1      # giorni di scarto ammessi fra data ESPN (UTC) e data CSV (ora UK)
 
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) classifiche-alternative/1.0"
 REQUEST_PAUSE = 0.35          # secondi fra una richiesta e l'altra
@@ -366,6 +394,223 @@ def fetch_standings_games(league):
     except (TypeError, ValueError):
         return None
     return out or None
+
+
+# ----------------------------------------------------------------------------
+# CONTROLLO INCROCIATO (football-data.co.uk) — solo segnalazione
+# ----------------------------------------------------------------------------
+# Non usa http_json e non tocca FAILED_REQUESTS: se il CSV non e' raggiungibile
+# il controllo risulta "non disponibile" ma la build NON fallisce.
+
+def http_bytes(url, retries=2, timeout=25):
+    """GET -> (bytes, None) oppure (None, descrizione errore)."""
+    ctx = ssl.create_default_context()
+    last = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                return r.read(), None
+        except urllib.error.HTTPError as e:
+            last = "HTTP %s" % e.code
+            if e.code in (403, 404):
+                break
+        except Exception as e:                      # noqa: BLE001
+            last = e.__class__.__name__
+        time.sleep(1.5 * (attempt + 1))
+    return None, last
+
+
+def season_code(today=None):
+    """Codice stagione football-data.co.uk: 2026/27 -> '2627'."""
+    y = season_bounds(today)[0].year
+    return "%02d%02d" % (y % 100, (y + 1) % 100)
+
+
+def fetch_audit_csv(league, stat, offline=False):
+    """Ritorna (righe, errore). Online: scarica e aggiorna la cache; offline: usa la cache."""
+    path = os.path.join(raw_dir(league), AUDIT_CSV_FILE)
+    url = AUDIT_CSV.format(season=season_code(), div=league["csv"])
+    if offline:
+        if not os.path.exists(path):
+            return None, "nessuna copia del CSV in cache (modalita' offline)"
+        with open(path, "rb") as f:
+            raw = f.read()
+    else:
+        raw, err = http_bytes(url)
+        if raw is None:
+            log("    controllo incrociato: CSV non raggiungibile (%s): %s" % (err, url))
+            return None, "CSV football-data.co.uk non raggiungibile (%s)" % err
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    reader = csv.DictReader(io.StringIO(text))
+    need = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"] + list(stat["csv"])
+    lacking = [c for c in need if c not in (reader.fieldnames or [])]
+    if lacking:
+        log("    controllo incrociato: formato CSV cambiato, colonne mancanti: %s" % ", ".join(lacking))
+        return None, "formato del CSV cambiato (colonne mancanti: %s)" % ", ".join(lacking)
+    rows = [r for r in reader if (r.get("HomeTeam") or "").strip()]
+    if not offline:
+        os.makedirs(raw_dir(league), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, path)
+    return rows, None
+
+
+def _int_or_none(v):
+    try:
+        return int(float(str(v).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _csv_date(s):
+    for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return dt.datetime.strptime((s or "").strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def run_audit(league, stat, events, shots, rows):
+    """Confronta risultato e statistica ESPN con il CSV. Non modifica nulla."""
+    aliases = CSV_TEAMS.get(league["slug"], {})
+    hcol, acol = stat["csv"]
+    espn_names = set()
+    ev_by_pair = {}
+    for ev in events.values():
+        espn_names.update((ev["home"]["name"], ev["away"]["name"]))
+        ev_by_pair.setdefault((ev["home"]["name"], ev["away"]["name"]), []).append(ev)
+
+    unknown, cm = set(), []
+    for r in rows:
+        h_raw, a_raw = r["HomeTeam"].strip(), r["AwayTeam"].strip()
+        h, a = aliases.get(h_raw, h_raw), aliases.get(a_raw, a_raw)
+        for raw_name, name in ((h_raw, h), (a_raw, a)):
+            if name not in espn_names:
+                unknown.add(raw_name)
+        cm.append({"date": _csv_date(r["Date"]), "home": h, "away": a,
+                   "gh": _int_or_none(r["FTHG"]), "ga": _int_or_none(r["FTAG"]),
+                   "sh": _int_or_none(r.get(hcol)), "sa": _int_or_none(r.get(acol))})
+    csv_dates = [m["date"] for m in cm if m["date"]]
+    last_csv = max(csv_dates) if csv_dates else None
+    csv_by_pair = {}
+    for m in cm:
+        csv_by_pair.setdefault((m["home"], m["away"]), []).append(m)
+
+    def ev_day(ev):
+        d = parse_iso(ev["date"])
+        return d.date() if d else None
+
+    def show(d):
+        return d.strftime("%d/%m/%Y") if d else "?"
+
+    abbr = stat["abbr"]
+    out = {"compared": 0, "matching": 0, "discordant": 0, "pending": 0,
+           "stat_compared": 0, "issues": [], "unknown_teams": sorted(unknown)}
+    used = set()
+    finished = [ev for ev in events.values() if ev["completed"]]
+    last_espn = max((ev_day(ev) for ev in finished if ev_day(ev)), default=None)
+    for ev in sorted(finished, key=lambda e: (e["date"] or "", e["id"])):
+        day = ev_day(ev)
+        pair = (ev["home"]["name"], ev["away"]["name"])
+        cand = [m for m in csv_by_pair.get(pair, [])
+                if m["date"] and day and abs((m["date"] - day).days) <= AUDIT_DATE_TOLERANCE]
+        base = {"date": show(to_rome(parse_iso(ev["date"])) if day else None),
+                "home": pair[0], "away": pair[1]}
+        if not cand:
+            if last_csv is None or (day and day > last_csv):
+                out["pending"] += 1
+            else:
+                other = csv_by_pair.get(pair, [])
+                why = ("nel CSV con data %s" % ", ".join(show(m["date"]) for m in other)) if other \
+                    else "assente nel CSV, che arriva fino al %s" % show(last_csv)
+                out["issues"].append(dict(base, field="partita", espn="conclusa", csv=why))
+                for m in other:
+                    used.add(id(m))
+            continue
+        m = cand[0]
+        used.add(id(m))
+        out["compared"] += 1
+        diffs = []
+        gh, ga = _int_or_none(ev["home"].get("score")), _int_or_none(ev["away"].get("score"))
+        if (gh, ga) != (m["gh"], m["ga"]):
+            diffs.append(dict(base, field="risultato", espn="%s-%s" % (gh, ga), csv="%s-%s" % (m["gh"], m["ga"])))
+        s = shots.get(ev["id"]) or {}
+        sth, sta = s.get("home"), s.get("away")
+        if None not in (sth, sta, m["sh"], m["sa"]):
+            out["stat_compared"] += 1
+            if (sth, sta) != (m["sh"], m["sa"]):
+                diffs.append(dict(base, field=abbr, espn="%d-%d" % (sth, sta), csv="%d-%d" % (m["sh"], m["sa"])))
+        elif None in (sth, sta) or None in (m["sh"], m["sa"]):
+            diffs.append(dict(base, field=abbr,
+                              espn="n.d." if None in (sth, sta) else "%d-%d" % (sth, sta),
+                              csv="n.d." if None in (m["sh"], m["sa"]) else "%d-%d" % (m["sh"], m["sa"])))
+        if diffs:
+            out["discordant"] += 1
+            out["issues"].extend(diffs)
+        else:
+            out["matching"] += 1
+
+    # partite concluse nel CSV ma non concluse (o assenti) per ESPN
+    for m in cm:
+        if id(m) in used:
+            continue
+        evs = ev_by_pair.get((m["home"], m["away"]), [])
+        ev = next((e for e in evs if ev_day(e) and m["date"]
+                   and abs((ev_day(e) - m["date"]).days) <= AUDIT_DATE_TOLERANCE), None)
+        base = {"date": show(m["date"]), "home": m["home"], "away": m["away"], "field": "partita",
+                "csv": "conclusa %s-%s" % (m["gh"], m["ga"])}
+        if ev is None:
+            out["issues"].append(dict(base, espn="non trovata"))
+        else:
+            out["issues"].append(dict(base, espn="non conclusa (%s)" % (
+                ev.get("status_detail") or ev.get("status_name") or ev.get("state"))))
+
+    out["last_csv"] = show(last_csv) if last_csv else None
+    out["last_espn"] = show(last_espn) if last_espn else None
+    out["lag_days"] = (last_espn - last_csv).days if (last_csv and last_espn) else None
+    return out
+
+
+def audit_html(audit, err, stat):
+    head = '<b>Controllo incrociato</b> con il CSV di football-data.co.uk'
+    if err:
+        return ('<h2>Controllo incrociato</h2><div class="banner info" id="audit-box">%s &mdash; '
+                'controllo non disponibile: %s.</div>' % (head, esc(err)))
+    a = audit
+    pct = (" (%.1f%%)" % (100.0 * a["matching"] / a["compared"])) if a["compared"] else ""
+    lag = (" &middot; %d giorni prima dell&rsquo;ultima in ESPN (%s)" % (a["lag_days"], a["last_espn"])
+           if a["lag_days"] is not None else "")
+    lines = [
+        "%s: confronta risultato finale e %s (colonne %s/%s) partita per partita. "
+        "Solo segnalazione: classifiche e dati non vengono modificati." % (
+            head, esc(stat["unit"]), stat["csv"][0], stat["csv"][1]),
+        "<ul><li>Partite confrontate: <b>%d</b> &middot; coincidenti: <b>%d</b>%s &middot; "
+        "discordanti: <b>%d</b> &middot; in attesa (non ancora nel CSV): <b>%d</b></li>" % (
+            a["compared"], a["matching"], pct, a["discordant"], a["pending"]),
+        "<li>Ultima partita presente nel CSV: <b>%s</b>%s</li>" % (a["last_csv"] or "nessuna", lag),
+    ]
+    if a["unknown_teams"]:
+        lines.append("<li class=\"ko\">Nomi squadra del CSV non riconosciuti: %s</li>" %
+                     esc(", ".join(a["unknown_teams"])))
+    lines.append("</ul>")
+    if a["issues"]:
+        rows = "".join(
+            "<tr><td>%s</td><td>%s - %s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                esc(i["date"]), esc(i["home"]), esc(i["away"]), esc(i["field"]), esc(i["espn"]), esc(i["csv"]))
+            for i in a["issues"])
+        lines.append('<div class="tw"><table class="audit"><thead><tr><th>Data</th><th>Partita</th>'
+                     '<th>Campo</th><th>ESPN</th><th>CSV</th></tr></thead><tbody>%s</tbody></table></div>' % rows)
+    else:
+        lines.append("Nessuna discordanza.")
+    cls = "warn" if (a["issues"] or a["unknown_teams"]) else "info"
+    return '<h2>Controllo incrociato</h2><div class="banner %s" id="audit-box">%s</div>' % (cls, "".join(lines))
 
 
 # ----------------------------------------------------------------------------
@@ -684,6 +929,10 @@ CSS = r"""
   .dlg-b{padding:16px}
   .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px;color:var(--dim)}
   .legend span b{color:var(--txt)}
+  table.audit{margin-top:10px;background:transparent;border-color:rgba(255,255,255,.18)}
+  table.audit th,table.audit td{text-align:left;width:auto;border-color:rgba(255,255,255,.12)}
+  table.audit th{background:rgba(0,0,0,.2)}
+  table.audit tbody tr{cursor:default}
   .foot{color:var(--dim);font-size:12px;margin-top:26px;border-top:1px solid var(--line);padding-top:12px}
   .lg{margin-top:26px}
   .lg h2{margin-top:0}
@@ -747,6 +996,8 @@ __NAV__
     <summary>Partite giocate (__NPLAYED__)</summary>
     <div class="mlist" id="played"></div>
   </details>
+
+  <div id="audit"></div>
 
   <div id="missing"></div>
 
@@ -893,6 +1144,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
 document.getElementById("meta").innerHTML = DATA.meta_html;
 document.getElementById("banners").innerHTML = DATA.banners_html;
 document.getElementById("verify").innerHTML = DATA.verify_html;
+document.getElementById("audit").innerHTML = DATA.audit_html;
 document.getElementById("missing").innerHTML = DATA.missing_html;
 document.getElementById("foot").innerHTML = DATA.foot_html;
 renderAll();
@@ -1128,6 +1380,30 @@ def process_league(league, args, now):
                 for m in missing)
             missing_html = '<h2>Dati mancanti</h2><div class="mlist">%s</div>' % rows
 
+        # controllo incrociato: mai bloccante, mai modifica dati
+        audit, audit_err = None, None
+        if league.get("csv") and stat.get("csv"):
+            try:
+                rows, audit_err = fetch_audit_csv(league, stat, offline=args.offline)
+                if rows is not None:
+                    audit = run_audit(league, stat, events, shots, rows)
+            except Exception as e:                      # noqa: BLE001
+                audit, audit_err = None, "errore nel controllo (%s)" % e.__class__.__name__
+        else:
+            audit_err = "nessuna fonte di confronto configurata"
+        if audit:
+            log("    controllo incrociato: confrontate %d, coincidenti %d, discordanti %d, in attesa %d, "
+                "ultima nel CSV %s (ritardo %s giorni)" % (
+                    audit["compared"], audit["matching"], audit["discordant"], audit["pending"],
+                    audit["last_csv"], audit["lag_days"]))
+            for i in audit["issues"]:
+                log("      ! %s  %s - %s  [%s]  ESPN %s  CSV %s" % (
+                    i["date"], i["home"], i["away"], i["field"], i["espn"], i["csv"]))
+            if audit["unknown_teams"]:
+                log("      ! nomi CSV non riconosciuti: %s" % ", ".join(audit["unknown_teams"]))
+        else:
+            log("    controllo incrociato non disponibile: %s" % audit_err)
+
         names = {t["id"]: t["name"] for t in teams.values()}
         for u in upcoming:
             names.setdefault(u["home_id"], u["home"])
@@ -1144,7 +1420,8 @@ def process_league(league, args, now):
             "banners_html": "".join('<div class="banner %s">%s</div>' % (c, esc(t)) for c, t in banners),
             "verify_html": verify_html,
             "missing_html": missing_html,
-            "foot_html": ("Fonte: API pubbliche ESPN. Regola: piu' %s = 3 punti, "
+            "audit_html": audit_html(audit, audit_err, stat),
+            "foot_html": ("Fonte: API pubbliche ESPN; controllo incrociato con football-data.co.uk. Regola: piu' %s = 3 punti, "
                           "pari = 1 punto a testa. Ordinamento a pari punti: differenza %s, "
                           "poi %s fatti. Controlli interni: %s." %
                           (esc(stat["unit"]), esc(stat["unit"]), esc(stat["unit"]), "OK" if ok else "ANOMALIE")),
@@ -1154,6 +1431,8 @@ def process_league(league, args, now):
         render_page(league, stat, data, len(played))
         pdir = proc_dir(league, stat)
         save_json(os.path.join(pdir, "tables.json"), tables)
+        save_json(os.path.join(pdir, "audit.json"),
+                  audit if audit else {"available": False, "reason": audit_err})
         top = tables["total"][0]
         save_json(os.path.join(pdir, "meta.json"), {
             "included": len(played), "excluded_missing": len(missing),
@@ -1164,7 +1443,7 @@ def process_league(league, args, now):
         })
         res["stats"][stat["slug"]] = {
             "included": len(played), "excluded": len(missing), "to_verify": verify,
-            "checks_ok": ok, "tables": tables,
+            "checks_ok": ok, "tables": tables, "audit": audit, "audit_err": audit_err,
         }
 
     # confronto G con standings ESPN (una volta per campionato, solo online)
@@ -1250,6 +1529,15 @@ def main():
             log("  %-15s %-14s incluse %3d  escluse(senza dati) %d  da verificare %d  controlli %s" % (
                 r["league"]["name"], slug, s["included"], s["excluded"], len(s["to_verify"]),
                 "OK" if s["checks_ok"] else "ANOMALIE"))
+            a = s.get("audit")
+            if a:
+                log("  %-15s %-14s controllo incrociato: %d confrontate, %d coincidenti, %d discordanti, "
+                    "%d in attesa, altre segnalazioni %d, ritardo CSV %s giorni" % (
+                        r["league"]["name"], "", a["compared"], a["matching"], a["discordant"],
+                        a["pending"], sum(1 for i in a["issues"] if i["field"] == "partita"), a["lag_days"]))
+            else:
+                log("  %-15s %-14s controllo incrociato non disponibile: %s" % (
+                    r["league"]["name"], "", s.get("audit_err")))
     for slug, why in failed.items():
         log("  !! FALLITO/PARZIALE: %s -> %s" % (slug, why))
     if any(r["anomaly"] for r in results):

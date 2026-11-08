@@ -10,7 +10,7 @@ Ruoli: la chat Claude scrive/rivede il codice e prepara i prompt; tu esegui, tes
 Chiudi ogni lavoro con un riepilogo breve, con numeri verificabili, pensato per essere incollato in chat.
 
 ## Multi-campionato
-- `build.py` ha due registri: `LEAGUES` (codice ESPN, nome, slug) e `STATS` (id ESPN, nome, slug, abbr, unit, implemented).
+- `build.py` ha due registri: `LEAGUES` (codice ESPN, nome, slug, divisione CSV) e `STATS` (id ESPN, nome, slug, abbr, unit, implemented).
   Aggiungere un campionato = una riga in `LEAGUES`. Aggiungere una statistica = una riga in `STATS`
   (`implemented: False` la mostra come "prossimamente" nel menù, non cliccabile).
 - Cache separata per campionato: `data/raw/<league-slug>/events.json` (partite) e `data/raw/<league-slug>/<stat-slug>.json` (statistica).
@@ -25,6 +25,16 @@ Chiudi ogni lavoro con un riepilogo breve, con numeri verificabili, pensato per 
 Partita con calcio d'inizio passato da oltre 4 ore e non conclusa per ESPN (o conclusa senza risultato leggibile):
 non si scarta in silenzio. Compare nel riquadro "Dati da verificare" della pagina e viene stampata a terminale.
 Non entra nelle classifiche finché non è conclusa e non compare fra le partite da giocare.
+
+## Controllo incrociato (football-data.co.uk)
+- CSV gratuito `https://football-data.co.uk/mmz4281/<stagione>/<div>.csv` (`LEAGUES[].csv`: I1, E0; stagione 2026/27 = `2627`).
+  Colonne per statistica in `STATS[].csv` (tiri in porta = `HST`/`AST`), risultato `FTHG`/`FTAG`.
+- Abbinamento per squadre (`CSV_TEAMS`: nome CSV -> nome ESPN, solo dove diversi) e data con tolleranza ±1 giorno.
+- Solo segnalazione: riquadro "Controllo incrociato" in pagina, righe `!` a terminale, `audit.json` in data/processed.
+  Non modifica mai classifiche o dati. Concluse ESPN non ancora nel CSV = "in attesa", non discordanti.
+- Non bloccante: CSV irraggiungibile o formato cambiato -> "controllo non disponibile", exit code invariato
+  (non usa `http_json`/`FAILED_REQUESTS`). Con `--offline` usa la copia in `data/raw/<league-slug>/football-data-co-uk.csv`.
+- Nome squadra del CSV non riconosciuto (es. neopromossa) -> segnalato nel riquadro: aggiungerlo a `CSV_TEAMS`.
 
 ## Controlli
 - Interni (a ogni build): somma punti = 3*V + N, presenze = 2 * partite, V+N+P = G, casa + trasferta = totale.

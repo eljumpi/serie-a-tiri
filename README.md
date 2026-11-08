@@ -37,12 +37,28 @@ nell'output di `build.py`, e resta fuori dalle classifiche finché non è conclu
 API pubbliche di ESPN, senza chiave (scoreboard, summary, standings). Se ESPN cambia formato o non risponde,
 lo script lo segnala invece di inventare dati. Serve solo Python 3 (libreria standard).
 
+## Controllo incrociato
+
+Ogni pagina ha un riquadro **Controllo incrociato**: risultato finale e tiri in porta di ESPN vengono
+confrontati, partita per partita, con il CSV gratuito di [football-data.co.uk](https://www.football-data.co.uk/)
+(`mmz4281/<stagione>/I1.csv` per la Serie A, `E0.csv` per la Premier; colonne `FTHG`/`FTAG` e `HST`/`AST`).
+Le partite si abbinano per squadre (mappa nomi `CSV_TEAMS` in `build.py`) e data (±1 giorno).
+Il riquadro riporta partite confrontate, coincidenti, discordanti, in attesa (concluse per ESPN ma non ancora
+nel CSV, che esce con qualche giorno di ritardo), la data dell'ultima partita nel CSV e l'elenco delle discordanze.
+Segnala anche le partite concluse nel CSV ma non per ESPN e i nomi squadra non riconosciuti.
+
+È **solo una segnalazione**: classifiche e dati non vengono mai modificati. Se il CSV non è raggiungibile
+il riquadro dice "controllo non disponibile" e la build non fallisce. Il CSV scaricato è in
+`data/raw/<league-slug>/football-data-co-uk.csv`, l'esito in `data/processed/<league-slug>/<stat-slug>/audit.json`.
+
 ## Aggiungere un campionato o una statistica
 
 In `build.py`:
 
-- campionato: una riga in `LEAGUES` (codice ESPN, nome, slug). Esempio: `{"code": "esp.1", "name": "LaLiga", "slug": "laliga"}`
-- statistica: una riga in `STATS` (nome ESPN in `boxscore.teams[].statistics`, nome, slug, `implemented`)
+- campionato: una riga in `LEAGUES` (codice ESPN, nome, slug, divisione football-data.co.uk o `None`).
+  Esempio: `{"code": "esp.1", "name": "LaLiga", "slug": "laliga", "csv": "SP1"}`, più i nomi diversi in `CSV_TEAMS`
+- statistica: una riga in `STATS` (nome ESPN in `boxscore.teams[].statistics`, nome, slug, `implemented`,
+  colonne CSV casa/trasferta per il controllo incrociato o `None`)
 
 Le pagine `/<league-slug>/<stat-slug>.html` e le card della home vengono generate da sole.
 Le cache stanno in `data/raw/<league-slug>/`.
