@@ -34,6 +34,10 @@ Non entra nelle classifiche finché non è conclusa e non compare fra le partite
   Non modifica mai classifiche o dati. Concluse ESPN non ancora nel CSV = "in attesa", non discordanti.
 - Non bloccante: CSV irraggiungibile o formato cambiato -> "controllo non disponibile", exit code invariato
   (non usa `http_json`/`FAILED_REQUESTS`). Con `--offline` usa la copia in `data/raw/<league-slug>/football-data-co-uk.csv`.
+- Il CSV NON si versiona né si ripubblica (termini d'uso: uso privato, previsione partite; ridistribuzione non prevista).
+  `data/raw/*/football-data-co-uk.csv` è in `.gitignore`; il workflow lo riscarica a ogni esecuzione.
+  Nel repo restano solo conteggi e lista delle discordanze (pagine e `audit.json`). Le copie pubblicate per errore
+  sono solo nella cronologia del commit 8bbf038 (cronologia non riscritta, per scelta).
 - Nome squadra del CSV non riconosciuto (es. neopromossa) -> segnalato nel riquadro: aggiungerlo a `CSV_TEAMS`.
 
 ## Controlli

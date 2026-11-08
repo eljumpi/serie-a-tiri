@@ -48,8 +48,13 @@ nel CSV, che esce con qualche giorno di ritardo), la data dell'ultima partita ne
 Segnala anche le partite concluse nel CSV ma non per ESPN e i nomi squadra non riconosciuti.
 
 È **solo una segnalazione**: classifiche e dati non vengono mai modificati. Se il CSV non è raggiungibile
-il riquadro dice "controllo non disponibile" e la build non fallisce. Il CSV scaricato è in
-`data/raw/<league-slug>/football-data-co-uk.csv`, l'esito in `data/processed/<league-slug>/<stat-slug>/audit.json`.
+il riquadro dice "controllo non disponibile" e la build non fallisce. L'esito (solo conteggi e lista delle
+discordanze) è in `data/processed/<league-slug>/<stat-slug>/audit.json`.
+
+**Il CSV non si ripubblica.** I termini di football-data.co.uk consentono l'uso privato e per la previsione
+delle partite e non parlano di ridistribuzione: il file viene scaricato a ogni esecuzione (anche nel workflow)
+in `data/raw/<league-slug>/football-data-co-uk.csv`, che è in `.gitignore` e resta solo in locale.
+Nel repo finiscono soltanto i conteggi e le discordanze.
 
 ## Aggiungere un campionato o una statistica
 

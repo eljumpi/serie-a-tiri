@@ -1,3 +1,5 @@
 data/raw/stats/
 __pycache__/
 *.tmp
+# CSV football-data.co.uk: solo copia locale, non ripubblicare (termini d'uso: uso privato)
+data/raw/*/football-data-co-uk.csv
